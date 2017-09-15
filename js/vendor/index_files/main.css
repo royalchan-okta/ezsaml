@@ -1,0 +1,42 @@
+
+
+/* ==========================================================================
+   Author's custom styles
+   ========================================================================== */
+
+#saml_input {
+	width: 100%;
+	height: 120px;
+}
+
+.value {
+	word-wrap: break-word;
+}
+
+#output_area {
+	width: 100%;
+	height: 120px;
+	white-space: nowrap;
+}
+
+#output_params {
+	padding-top: 10px;
+	padding-left: 10px;
+	background-color: #CCC;
+}
+
+.param_label {
+	font-weight: bold;
+}
+
+
+
+
+
+
+
+
+
+
+
+
