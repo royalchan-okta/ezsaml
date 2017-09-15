@@ -25,11 +25,26 @@
 	background-color: #CCC;
 }
 
+#assertion_params {
+	padding-left: 10px;
+	font-size: 9pt;
+}
+
 .param_label {
 	font-weight: bold;
 }
 
+#message {
+	color: #3A3;
+}
 
+.assertion_param_label {
+	font-weight: bold;
+}
+
+.assertion_param_attrs {
+	padding-left: 10px;
+}
 
 
 
