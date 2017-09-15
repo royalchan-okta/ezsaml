@@ -5,11 +5,12 @@ function resizeTextArea(textArea) {
 
 function hideAll() {
 	$('#hidden_raw_saml').hide();
-
+	$('#message').hide();
 	$('#urldecode').hide();
 	$('#b64decode').hide();
 	$('#compression').hide();
 	$('#output').hide();
+	$('#relay_state').hide();
 	$('#error').hide();
 }
 
@@ -21,6 +22,52 @@ function show(selector, s) {
 function appendOutputParam(name, val) {
 	if (name && val) {
 	    $('#output_params').append('<div class="param_value"><span class="param_label">' + name + ': </span>' + val + '</div>');
+    }
+}
+
+function appendMessageParam(name, val) {
+	if (name && val) {
+	    $('#message_params').append('<div class="param_value"><span class="param_label">' + name + ': </span>' + val + '</div>');
+    }
+}
+
+function appendAssertionParam(assertionNode) {
+	if (assertionNode && assertionNode.length > 0) {
+		var html = '<div class="param_value">' + 
+	    	'<div class="param_label">Assertion</div><div id="assertion_params">';
+
+	    $.each($('saml\\:Conditions', assertionNode).get(), function (key, conditionNode) {
+	    	if (conditionNode.getAttribute('NotBefore')) {
+	    		html += '<div class="assertion_param"><span class="assertion_param_label">NotBefore: </span>' + getDateString(conditionNode.getAttribute('NotBefore')) + '</div>'
+	    	}
+	    	if (conditionNode.getAttribute('NotOnOrAfter')) {
+	    		html += '<div class="assertion_param"><span class="assertion_param_label">NotOnOrAfter: </span>' + getDateString(conditionNode.getAttribute('NotOnOrAfter')) + '</div>'
+	    	} 
+	    });
+
+	    $.each($('saml\\:AuthnStatement', assertionNode).get(), function (key, authnNode) {
+	    	if (authnNode.getAttribute('AuthnInstant')) {
+	    		html += '<div class="assertion_param"><span class="assertion_param_label">AuthnInstant: </span>' + getDateString(authnNode.getAttribute('AuthnInstant')) + '</div>'
+	    	}
+	    	if (authnNode.getAttribute('SessionNotOnOrAfter')) {
+	    		html += '<div class="assertion_param"><span class="assertion_param_label">SessionNotOnOrAfter: </span>' + getDateString(authnNode.getAttribute('SessionNotOnOrAfter')) + '</div>'
+	    	} 
+	    });
+
+	    html += '<div class="assertion_param"><span class="assertion_param_label">Attributes: </span>';
+	    $.each($('saml\\:Attribute', assertionNode).get(), function (key, attrNode) {
+	    	if (attrNode.getAttribute('Name')) {
+	    		html += '<div class="assertion_param_attrs"><span class="assertion_param_label">' + attrNode.getAttribute('Name') + ': </span>';
+	    		$.each($('saml\\:AttributeValue', attrNode).get(), function (key, valueNode) {
+	    			html += valueNode.innerHTML + '<br>';
+	    		});
+	    		html += '</div>';
+	    	}
+	    });
+	    html += '</div>';
+
+	    html += '</div></div>';
+	    $('#output_params').append(html);
     }
 }
 
@@ -50,7 +97,7 @@ function getDateString(xmlDate) {
 		millis = -millis;
 	}
 
-	return xmlDate + " (" + getMillisToLargestUnit(millis) + (inThePast ? " ago" : "remaining") + ")";
+	return xmlDate + " (" + getMillisToLargestUnit(millis) + (inThePast ? " ago" : " remaining") + ")";
 }
 
 function output(s) {
@@ -64,10 +111,16 @@ function output(s) {
 	parser = new DOMParser();
 	xmlDoc = parser.parseFromString(s, "text/xml");
 
-	appendOutputParam("Type", xmlDoc.documentElement.tagName)
+	appendOutputParam("Type", xmlDoc.documentElement.tagName.split(":")[1])
 	appendOutputParam("ID", xmlDoc.documentElement.getAttribute("ID"));
+	appendOutputParam("InResponseTo", xmlDoc.documentElement.getAttribute("InResponseTo"));
 	appendOutputParam("Issued At", getDateString(xmlDoc.documentElement.getAttribute("IssueInstant")));
-	appendOutputParam("Protocol Binding", xmlDoc.documentElement.getAttribute("ProtocolBinding"));
+
+	if (xmlDoc.documentElement.getAttribute("ProtocolBinding")) {
+		var bindingArray = xmlDoc.documentElement.getAttribute("ProtocolBinding").split(':');
+		appendOutputParam("Protocol Binding", bindingArray[bindingArray.length - 1]);
+	}
+	
 	appendOutputParam("Provider Name", xmlDoc.documentElement.getAttribute("ProviderName"));
 	appendOutputParam("ACS URL", xmlDoc.documentElement.getAttribute("AssertionConsumerServiceURL"));
 	appendOutputParam("Destination", xmlDoc.documentElement.getAttribute("Destination"));
@@ -76,6 +129,8 @@ function output(s) {
 	if (issuerElements.length > 0) {
 		appendOutputParam("Issuer", issuerElements[0].innerHTML);
 	}
+
+	appendAssertionParam($('saml\\:Assertion', xmlDoc));
 }
 
 function isValidSAML(s) {
@@ -93,17 +148,80 @@ function isValidSAML(s) {
 		|| tagName.endsWith("LogoutResponse");
 }
 
+function tryParseQueryParams(s, msg, orgParams) {
+	if (orgParams == null) {
+		orgParams = {};
+	}
+
+	var split = s.split('?');
+	if (split.length != 2) {
+		return;
+	}
+
+	var appRegex = new RegExp('/app/[^/]+/[^/]+/');
+	var match = appRegex.exec(s);
+	if (match) {
+		var components = match[0].split('/')
+		orgParams
+		orgParams["App Name"] = components[2];
+		orgParams["App External Id"] = components[3];
+	}
+
+	var orgRegex = new RegExp('[a-zA-Z0-9]+.(okta|okta1|oktapreview).com');
+	match = orgRegex.exec(s);
+	if (match) {
+		orgParams["Org Domain"] = match[0];
+	}
+
+	var ret = { 'message': msg };
+	var params = split[1].split('&');
+	for (var i = 0; i < params.length; ++i) {
+		var paramPair = params[i].split('=');
+		if (paramPair.length != 2) {
+			continue;
+		}
+
+		if (paramPair[0] === 'SAMLRequest' || paramPair[0] === 'RelayState') {
+			ret[paramPair[0]] = decodeURIComponent(paramPair[1]);
+		} else if (paramPair[0] === 'fromURI') {
+			// special okta case, parse into fromURI
+			var newMsg = 'Parsed fromURI query parameter for SAMLRequest.';
+			return tryParseQueryParams(decodeURIComponent(paramPair[1]), newMsg, orgParams);
+		}
+	}
+
+	ret["orgParams"] = orgParams;
+	return ret;
+}
+
 requirejs(["js/vendor/pako"], function(pako) {
-    var test = { my: 'super', puper: [456, 567], awesome: 'pako' };
-
-	var binaryString = pako.deflate(JSON.stringify(test), { to: 'string' });
-
 	$('#saml_input').on('keyup paste', _.debounce(function() {
 		hideAll();
-		//resizeTextArea($("#saml_input"));
 
 	    var input = $("#saml_input").val();
-	    
+
+	    if (isValidSAML(input)) {
+	    	output(input);
+	    	return;
+	    }
+
+	   	var queryParams = tryParseQueryParams(input, 'Parsed URL for SAMLRequest.');
+	   	if (queryParams) {
+	   		if (queryParams['SAMLRequest']) {
+	   			input = queryParams['SAMLRequest'];
+	   		}
+	   		if (queryParams['RelayState']) {
+	   			show('relay_state', queryParams['RelayState']);
+	   		}
+	   		if (queryParams['message']) {
+	   			show('message', queryParams['message']);
+	   			$('#message_params').empty();
+	   			$.each(queryParams['orgParams'], function (k, v) {
+	   				appendMessageParam(k, v);
+	   			});
+	   		}
+	   	}
+
 	    var isUrlEncoded = false;
 	    try {
 		    var decoded = decodeURIComponent(input);
@@ -170,7 +288,6 @@ requirejs(["js/vendor/pako"], function(pako) {
       }
   	});
 
-    $("#saml_input").val("fZLLTsMwEEX3SPyD5X1eIARYTVABISrxiGhgwc51JonBj%2BBxGvh73BQELOj2embuueOZnb1rRdbgUFqT0yxOKQEjbC1Nm9PH6io6oWfF%2Ft4MuVY9mw%2B%2BMw%2FwNgB6EjoNsukhp4MzzHKUyAzXgMwLtpzf3rCDOGW9s94KqyhZXOa05Z2QvXjRjVzpprdKqrZruxdjegVKq9dOrGotekqevrEONlgLxAEWBj03Pkhpdhylp1F2VKUZSw9ZevJMSfnldC7NNsEurNW2CNl1VZVReb%2BspgFrWYO7C9UB1dpWQSys3tiXHFGug9xwhUDJHBGcD4AX1uCgwS3BraWAx4ebnHbe98iSZBzH%2BGdMwhPf2aHt%2FGjdK24lgbSY9sumiO7XYncH4N8AtNhpMUt%2BTS%2B%2BvnKTcHFZhvWLDzJXyo4XDrgP8bwbQror6zT3%2FwNkcTYpso6aqZQNBnsQspFQU5IUW9e%2FNxMu6RM%3D");
  });
 
 
